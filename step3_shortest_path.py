@@ -2,7 +2,6 @@ import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
 
-# --- 1. Define NSFNET Topology (Nodes & Edges w/ Weights) ---
 G = nx.Graph()
 edges = [
     (1, 2, 3),
@@ -30,57 +29,59 @@ edges = [
 for u, v, w in edges:
     G.add_edge(u, v, Weight=w)
 
-# --- 2. Load SCF CSV (Source & Dest Nodes) ---
+# Use labels: City Name (Node Number)
+node_labels = {
+    1: "San Francisco (1)",
+    2: "Palo Alto (2)",
+    3: "Los Angeles (3)",
+    4: "Denver (4)",
+    5: "Houston (5)",
+    6: "Chicago (6)",
+    7: "Ann Arbor (7)",
+    8: "Pittsburgh (8)",
+    9: "Ithaca (9)",
+    10: "New York (10)",
+    11: "Princeton (11)",
+    12: "College Park (12)",
+    13: "Atlanta (13)",
+    14: "San Diego (14)",
+}
+
+# SCF from CSV
 scf = pd.read_csv("scf_230500226.csv")
 source = int(scf.loc[0, "source"])
 target = int(scf.loc[0, "destination"])
-print(f"Source node: {source}, Destination node: {target}")
 
-# --- 3. Compute Shortest Path (Dijkstra) ---
+# Shortest Path
 path = nx.shortest_path(G, source=source, target=target, weight="Weight")
 cost = nx.shortest_path_length(G, source=source, target=target, weight="Weight")
 print("Shortest path sequence:", path)
 print("Total path cost (sum of weights):", cost)
 
-# --- 4. Visualize and Highlight Path ---
-city_labels = {
-    1: "San Francisco",
-    2: "Palo Alto",
-    3: "Los Angeles",
-    4: "Denver",
-    5: "Houston",
-    6: "Chicago",
-    7: "Ann Arbor",
-    8: "Pittsburgh",
-    9: "Ithaca",
-    10: "New York",
-    11: "Princeton",
-    12: "College Park",
-    13: "Atlanta",
-    14: "San Diego",
-}
-pos = nx.spring_layout(
-    G, seed=42
-)  # You can manually place nodes later for a custom map
+# Visualization
+pos = nx.spring_layout(G, seed=42)
+plt.figure(figsize=(12, 10))
 
-plt.figure(figsize=(10, 8))
-nx.draw_networkx_nodes(G, pos, node_size=700, node_color="lightblue")
-nx.draw_networkx_labels(G, pos, labels=city_labels, font_size=9)
+# Draw nodes with labels "City Name (Node Number)"
+nx.draw_networkx_nodes(G, pos, node_color="lightblue", node_size=700)
+nx.draw_networkx_labels(G, pos, labels=node_labels, font_size=10)
 
-# Draw all edges in grey
+# Draw all edges in gray
 nx.draw_networkx_edges(G, pos, edgelist=G.edges(), width=2, edge_color="gray")
-# Highlight edges in path in red
+
+# Highlight shortest path edges in red
 path_edges = list(zip(path, path[1:]))
 nx.draw_networkx_edges(G, pos, edgelist=path_edges, width=4, edge_color="red")
+
 nx.draw_networkx_edge_labels(
     G,
     pos,
     edge_labels={(u, v): d["Weight"] for u, v, d in G.edges(data=True)},
     font_color="green",
 )
+
 plt.title(
-    f"NSFNET - Shortest Path {city_labels[source]} ({source}) → {city_labels[target]} ({target})",
-    fontsize=14,
+    f"NSFNET - Shortest Path {node_labels[source]} → {node_labels[target]}", fontsize=14
 )
 plt.tight_layout()
 plt.axis("off")
