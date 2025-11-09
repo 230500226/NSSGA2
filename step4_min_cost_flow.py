@@ -1,224 +1,349 @@
-import pandas as pd      # Used for loading input data and saving output results
-import networkx as nx    # Used for representing the network as a directed graph
-import pulp              # Linear programming package used for optimization
-import numpy as np       # Used for numerical operations, but not directly used here
+"""
+GA2 Project: Min-Cost Flow Solver for NSFNET
+Student: 230500226
+Using PuLP (not Gurobi)
+"""
 
-# --- 1. Build NSFNET Graph ---
-# The network topology is encoded as a directed graph (DiGraph).
-# Each tuple: (source_node, destination_node, link_weight)
-# Both directions of each link are listed to allow for asymmetric routing.
+import pulp
+import pandas as pd
+import networkx as nx
+import numpy as np
 
-G = nx.DiGraph()  # Directed graph allows us to model flows on arcs with direction
+# ============================================================
+# STEP 1: Load NSFNET Topology
+# ============================================================
 
-edges = [
-    # Each pair (u, v, w) represents an arc from node u to node v with cost 'w' per unit flow
-    (1, 2, 3),
-    (2, 1, 3),
-    (1, 3, 4),
-    (3, 1, 4),
-    (1, 5, 5),
-    (5, 1, 5),
-    (2, 6, 3),
-    (6, 2, 3),
-    (3, 4, 3),
-    (4, 3, 3),
-    (3, 14, 4),
-    (14, 3, 4),
-    (4, 6, 2),
-    (6, 4, 2),
-    (4, 7, 3),
-    (7, 4, 3),
-    (5, 6, 3),
-    (6, 5, 3),
-    (5, 9, 5),
-    (9, 5, 5),
-    (6, 7, 2),
-    (7, 6, 2),
-    (6, 10, 3),
-    (10, 6, 3),
-    (7, 11, 2),
-    (11, 7, 2),
-    (8, 9, 2),
-    (9, 8, 2),
-    (8, 10, 3),
-    (10, 8, 3),
-    (9, 12, 3),
-    (12, 9, 3),
-    (10, 11, 2),
-    (11, 10, 2),
-    (11, 12, 2),
-    (12, 11, 2),
-    (11, 13, 3),
-    (13, 11, 3),
-    (12, 8, 2),
-    (8, 12, 2),
-    (13, 14, 3),
-    (14, 13, 3),
+# NSFNET Links from project brief (Appendix C)
+links_data = [
+    (1, 2, 45, 3),
+    (1, 3, 45, 4),
+    (1, 5, 45, 5),
+    (2, 6, 45, 3),
+    (3, 4, 45, 3),
+    (3, 14, 45, 4),
+    (4, 6, 45, 2),
+    (4, 7, 45, 3),
+    (5, 6, 45, 3),
+    (5, 9, 45, 5),
+    (6, 7, 45, 2),
+    (6, 10, 45, 3),
+    (7, 11, 45, 2),
+    (8, 9, 45, 2),
+    (8, 10, 45, 3),
+    (9, 12, 45, 3),
+    (10, 11, 45, 2),
+    (11, 12, 45, 2),
+    (11, 13, 45, 3),
+    (12, 8, 45, 2),
+    (13, 14, 45, 3),
 ]
 
-# Add each edge into the network graph with the specified capacity and cost
-for u, v, w in edges:
-    G.add_edge(
-        u, v, capacity=45, weight=w
-    )
-    # capacity: maximum flow allowed through this link (45 Mbps for all links per NSFNET)
-    # weight: cost per unit flow for this link
+# Build bidirectional network
+G = nx.Graph()
+for src, dst, cap, wt in links_data:
+    G.add_edge(src, dst, capacity=cap, weight=wt)
 
-# --- 2. Load Demands ---
-# Load SCF and MCF demand instances from CSV files.
-# These files contain the source, destination, and required demand for each instance.
+nodes = list(G.nodes())
+edges = list(G.edges())
 
-scf = pd.read_csv("scf_230500226.csv")
-# SCF CSV: Should have at least columns 'source', 'destination', 'demand_Mbps'
+print("=" * 60)
+print("NSFNET TOPOLOGY LOADED")
+print("=" * 60)
+print(f"Nodes: {len(nodes)}")
+print(f"Edges: {len(edges)}")
+print(f"Total Capacity: {len(edges) * 45} Mbps")
+print()
 
-mcf = pd.read_csv("demands_230500226.csv")
-# MCF CSV: Should have columns 'source', 'destination', 'demand_Mbps' for each commodity
+# ============================================================
+# STEP 2: Load SCF and MCF Demand Data
+# ============================================================
 
-# --- 3. SCF - Min Cost Flow ---
-def run_scf(G, scf):
+scf_df = pd.read_csv("scf_230500226.csv")
+mcf_df = pd.read_csv("demands_230500226.csv")
+
+scf_source = int(scf_df.loc[0, "source"])
+scf_dest = int(scf_df.loc[0, "destination"])
+scf_demand = float(scf_df.loc[0, "demand_Mbps"])
+
+print("=" * 60)
+print("SINGLE-COMMODITY FLOW (SCF) PROBLEM")
+print("=" * 60)
+print(f"Source: Node {scf_source}")
+print(f"Destination: Node {scf_dest}")
+print(f"Demand: {scf_demand} Mbps")
+print()
+
+# ============================================================
+# STEP 3: Solve SCF Using Min-Cost Flow (PuLP)
+# ============================================================
+
+
+def solve_scf_min_cost(G, source, dest, demand, scaling_factor=1.0, verbose=False):
     """
-    Solves the Single-Commodity Min-Cost Flow problem on graph G
-    using source, destination, and demand from the SCF CSV file.
-
-    Returns:
-        scf_result: DataFrame containing flow values for each arc
+    Solve Single-Commodity Min-Cost Flow using PuLP
+    Returns the solution, flow_vars, scaled demand, status
     """
+    scaled_demand = demand * scaling_factor
 
-    prob = pulp.LpProblem("SCF", pulp.LpMinimize)  # Create a minimization LP
-
-    # Variables: flow on each arc (directed edge)
+    prob = pulp.LpProblem("SCF_Min_Cost_Flow", pulp.LpMinimize)
+    # Decision variables: flow in both directions
     flow_vars = {}
-    for u, v in G.edges():
-        # For each directed edge, create a non-negative flow variable
-        flow_vars[u, v] = pulp.LpVariable(f"f_{u}_{v}", lowBound=0)
-
-    # Objective: minimize total flow cost across all arcs
-    prob += pulp.lpSum([G[u][v]["weight"] * flow_vars[u, v] for u, v in G.edges()])
-
-    # --- Flow Conservation Constraints ---
-    # Enforce that at every node, total flow out - flow in matches demand
-    s = int(scf.loc[0, "source"])         # source node
-    t = int(scf.loc[0, "destination"])    # sink/destination node
-    d = float(scf.loc[0, "demand_Mbps"])  # required amount to send
-
-    for n in G.nodes():
-        in_flow = pulp.lpSum([flow_vars[u, n] for u in G.predecessors(n)])    # incoming flow to node n
-        out_flow = pulp.lpSum([flow_vars[n, v] for v in G.successors(n)])     # outgoing flow from node n
-        if n == s:
-            # Source: net outgoing flow equals total demand
-            prob += out_flow - in_flow == d
-        elif n == t:
-            # Sink: net incoming flow equals total demand
-            prob += in_flow - out_flow == d
-        else:
-            # All others: net flow balanced (no supply/demand)
-            prob += out_flow - in_flow == 0
-
-    # --- Capacity Constraints ---
-    # Flow on each arc cannot exceed its capacity
-    for u, v in G.edges():
-        prob += flow_vars[u, v] <= G[u][v]["capacity"]
-
-    # --- Solve the Problem ---
-    prob.solve()
-    # pulp.value(prob.objective) gives total minimum cost
-
-    # --- Extract Results ---
-    result = []
-    for u, v in G.edges():
-        result.append({"source": u, "destination": v, "flow": flow_vars[u, v].varValue})
-    scf_result = pd.DataFrame(result)
-    # Save results so they can be analyzed or plotted
-    scf_result.to_csv("SCF_result.csv", index=False)
-    return scf_result
-
-
-scf_result_df = run_scf(G, scf)  # Run SCF and get result table
-
-# --- 4. MCF - Min Cost Flow for 5 commodities ---
-def run_mcf(G, mcf):
-    """
-    Solves the Multi-Commodity Min-Cost Flow problem.
-    Each row in mcf contains source, destination, and the demand for a commodity.
-
-    Returns:
-        mcf_result: DataFrame with all commodity flows per arc
-        link_util_df: DataFrame with per-link utilization (sum of all flows / capacity)
-    """
-    prob = pulp.LpProblem("MCF", pulp.LpMinimize)  # Create minimization LP
-
-    K = mcf.shape[0]  # Number of commodities (rows in the CSV)
-    flow_vars = {}
-
-    # --- Variables: flow for every commodity on every arc ---
-    for k in range(K):
-        for u, v in G.edges():
-            # Each commodity's flow on each directed edge is independent
-            flow_vars[k, u, v] = pulp.LpVariable(f"f_{k}_{u}_{v}", lowBound=0)
-
-    # --- Objective: total cost over all commodities and arcs ---
-    prob += pulp.lpSum(
-        [G[u][v]["weight"] * flow_vars[k, u, v] for k in range(K) for u, v in G.edges()]
-    )
-
-    # --- Flow Conservation Constraints for Each Commodity ---
-    for k in range(K):
-        s = int(mcf.loc[k, "source"])
-        t = int(mcf.loc[k, "destination"])
-        d = float(mcf.loc[k, "demand_Mbps"])
-        for n in G.nodes():
-            in_flow = pulp.lpSum([flow_vars[k, u, n] for u in G.predecessors(n)])
-            out_flow = pulp.lpSum([flow_vars[k, n, v] for v in G.successors(n)])
-            if n == s:
-                prob += out_flow - in_flow == d     # Source: net out-flow = demand
-            elif n == t:
-                prob += in_flow - out_flow == d     # Sink: net in-flow = demand
-            else:
-                prob += out_flow - in_flow == 0     # Others: balanced
-
-    # --- Capacity Constraints: sum of flows ≤ capacity ---
-    for u, v in G.edges():
-        # For each directed edge, sum over all commodities' flows cannot exceed capacity
-        prob += (
-            pulp.lpSum([flow_vars[k, u, v] for k in range(K)]) <= G[u][v]["capacity"]
+    for i, j in G.edges():
+        flow_vars[(i, j)] = pulp.LpVariable(
+            f"f_{i}_{j}", lowBound=0, upBound=G[i][j]["capacity"]
+        )
+        flow_vars[(j, i)] = pulp.LpVariable(
+            f"f_{j}_{i}", lowBound=0, upBound=G[i][j]["capacity"]
         )
 
-    # --- Solve the Problem ---
-    prob.solve()
-    # pulp.value(prob.objective) gives minimal network cost
+    # Objective: Minimize total cost
+    cost_expr = []
+    for i, j in G.edges():
+        cost_expr.append(G[i][j]["weight"] * flow_vars[(i, j)])
+        cost_expr.append(G[i][j]["weight"] * flow_vars[(j, i)])
+    prob += pulp.lpSum(cost_expr), "Total_Cost"
 
-    # --- Extract Per-Commodity Flows for Each Arc ---
-    result = []
-    for k in range(K):
-        for u, v in G.edges():
-            result.append(
+    # Flow conservation at each node
+    for node in G.nodes():
+        if node == source:
+            supply_val = scaled_demand
+        elif node == dest:
+            supply_val = -scaled_demand
+        else:
+            supply_val = 0
+        outgoing = []
+        incoming = []
+        for neighbor in G.neighbors(node):
+            outgoing.append(flow_vars[(node, neighbor)])
+            incoming.append(flow_vars[(neighbor, node)])
+        prob += (
+            pulp.lpSum(outgoing) - pulp.lpSum(incoming) == supply_val,
+            f"FlowConservation_Node_{node}",
+        )
+
+    prob.solve(pulp.PULP_CBC_CMD(msg=0))
+    status = pulp.LpStatus[prob.status]
+    if verbose:
+        print(f"Solver status: {status}")
+    if status == "Optimal":
+        return prob, flow_vars, scaled_demand, True
+    else:
+        return prob, None, scaled_demand, False
+
+
+print("Attempting to solve SCF with original demand...")
+scaling_factor = 1.0
+max_iterations = 20
+
+for iteration in range(max_iterations):
+    prob, flow_vars, scaled_demand, is_feasible = solve_scf_min_cost(
+        G, scf_source, scf_dest, scf_demand, scaling_factor
+    )
+    if is_feasible:
+        print(f"✓ FEASIBLE at scaling factor: {scaling_factor:.3f}")
+        print(f"  Scaled demand: {scaled_demand:.1f} Mbps")
+        print(f"  Objective value (total cost): {pulp.value(prob.objective):.2f}")
+        break
+    else:
+        print(
+            f"✗ Infeasible at scaling {scaling_factor:.3f}, trying {scaling_factor * 0.9:.3f}..."
+        )
+        scaling_factor *= 0.9
+else:
+    print("ERROR: Could not find feasible solution after scaling")
+    flow_vars = None
+
+print()
+
+# ============================================================
+# STEP 4: Display SCF Results (non-zero flows only)
+# ============================================================
+
+if flow_vars:
+    print("=" * 60)
+    print("SCF SOLUTION - LINK UTILIZATION")
+    print("=" * 60)
+    results = []
+    total_flow_used = 0
+    for i, j in G.edges():
+        flow_ij = pulp.value(flow_vars[(i, j)])
+        flow_ji = pulp.value(flow_vars[(j, i)])
+        capacity = G[i][j]["capacity"]
+        weight = G[i][j]["weight"]
+        # Only output non-zero flows (tolerance 0.01 Mbps)
+        if flow_ij > 0.01 or flow_ji > 0.01:
+            # Pick net direction and show only one direction
+            if flow_ij > flow_ji:
+                net_flow = flow_ij
+                direction = f"{i}→{j}"
+            else:
+                net_flow = flow_ji
+                direction = f"{j}→{i}"
+            utilization = (net_flow / capacity) * 100
+            results.append(
                 {
-                    "commodity": k + 1,                 # 1-based commodity ID
-                    "source": u,
-                    "destination": v,
-                    "flow": flow_vars[k, u, v].varValue,
+                    "Link": direction,
+                    "Flow (Mbps)": net_flow,
+                    "Capacity (Mbps)": capacity,
+                    "Utilization (%)": utilization,
+                    "Cost": net_flow * weight,
                 }
             )
-    mcf_result = pd.DataFrame(result)
-    mcf_result.to_csv("MCF_result.csv", index=False)
+            total_flow_used += net_flow * weight
 
-    # --- Compute Link Utilisation ---
-    # For each arc, sum all flows across commodities; compare to capacity
-    link_util = []
-    for u, v in G.edges():
-        total_flow = sum([flow_vars[k, u, v].varValue for k in range(K)])
-        utilisation = total_flow / G[u][v]["capacity"]
-        link_util.append(
-            {
-                "source": u,
-                "destination": v,
-                "total_flow": total_flow,
-                "utilisation": utilisation,    # as a fraction of capacity
-            }
+    df_scf = pd.DataFrame(results)
+    print(df_scf.to_string(index=False))
+    print()
+    print(f"Total Cost: {total_flow_used:.2f}")
+    print(f"Average Utilization: {df_scf['Utilization (%)'].mean():.2f}%")
+    print(f"Max Utilization: {df_scf['Utilization (%)'].max():.2f}%")
+    print()
+    df_scf.to_csv("SCF_result.csv", index=False)
+    print("✓ Saved: SCF_result.csv")
+    print()
+
+# ============================================================
+# STEP 5: Solve and display Multi-Commodity Flow (MCF)
+# ============================================================
+
+print("=" * 60)
+print("MULTI-COMMODITY FLOW (MCF) PROBLEM")
+print("=" * 60)
+commodities = []
+for idx, row in mcf_df.iterrows():
+    k = idx + 1
+    s = int(row["source"])
+    t = int(row["destination"])
+    d = float(row["demand_Mbps"])
+    print(f"Commodity {k}: Node {s} → {t}, Demand = {d} Mbps")
+    commodities.append({"k": k, "source": s, "dest": t, "demand": d})
+print(f"Total Demand: {sum(c['demand'] for c in commodities)} Mbps")
+print()
+
+
+def solve_mcf_min_cost(G, commodities, scaling_factor=1.0, verbose=False):
+    # Scale all demands
+    scaled_commodities = [
+        {**c, "demand": c["demand"] * scaling_factor} for c in commodities
+    ]
+    prob = pulp.LpProblem("MCF_Min_Cost_Flow", pulp.LpMinimize)
+    # Decision variables for each commodity/direction
+    flow_vars = {}
+    for comm in scaled_commodities:
+        k = comm["k"]
+        for i, j in G.edges():
+            flow_vars[(k, i, j)] = pulp.LpVariable(f"f_{k}_{i}_{j}", lowBound=0)
+            flow_vars[(k, j, i)] = pulp.LpVariable(f"f_{k}_{j}_{i}", lowBound=0)
+    # Objective: min total cost
+    cost_expr = []
+    for comm in scaled_commodities:
+        k = comm["k"]
+        for i, j in G.edges():
+            wt = G[i][j]["weight"]
+            cost_expr.append(wt * flow_vars[(k, i, j)])
+            cost_expr.append(wt * flow_vars[(k, j, i)])
+    prob += pulp.lpSum(cost_expr), "Total_Cost"
+    # Flow conservation
+    for comm in scaled_commodities:
+        k = comm["k"]
+        s = comm["source"]
+        t = comm["dest"]
+        d = comm["demand"]
+        for node in G.nodes():
+            if node == s:
+                supply_val = d
+            elif node == t:
+                supply_val = -d
+            else:
+                supply_val = 0
+            outg = [flow_vars[(k, node, neighbor)] for neighbor in G.neighbors(node)]
+            incg = [flow_vars[(k, neighbor, node)] for neighbor in G.neighbors(node)]
+            prob += (
+                pulp.lpSum(outg) - pulp.lpSum(incg) == supply_val,
+                f"FlowCons_k{k}_node{node}",
+            )
+    # Capacity: total flow on each link ≤ capacity
+    for i, j in G.edges():
+        total_ij = [flow_vars[(c["k"], i, j)] for c in scaled_commodities]
+        total_ji = [flow_vars[(c["k"], j, i)] for c in scaled_commodities]
+        cap = G[i][j]["capacity"]
+        prob += pulp.lpSum(total_ij) <= cap, f"Cap_{i}_{j}"
+        prob += pulp.lpSum(total_ji) <= cap, f"Cap_{j}_{i}"
+    prob.solve(pulp.PULP_CBC_CMD(msg=0))
+    status = pulp.LpStatus[prob.status]
+    if verbose:
+        print(f"Solver status: {status}")
+    if status == "Optimal":
+        return prob, flow_vars, scaled_commodities, True
+    else:
+        return prob, None, scaled_commodities, False
+
+
+print("Attempting to solve MCF...")
+scaling_factor = 1.0
+for iteration in range(max_iterations):
+    prob, flow_vars, scaled_comms, is_feasible = solve_mcf_min_cost(
+        G, commodities, scaling_factor
+    )
+    if is_feasible:
+        print(f"✓ FEASIBLE at scaling factor: {scaling_factor:.3f}")
+        print(
+            f"  Total scaled demand: {sum(c['demand'] for c in scaled_comms):.1f} Mbps"
         )
-    link_util_df = pd.DataFrame(link_util)
-    link_util_df.to_csv("LinkUtilisation.csv", index=False)
-    return mcf_result, link_util_df
+        print(f"  Objective value (total cost): {pulp.value(prob.objective):.2f}")
+        break
+    else:
+        print(
+            f"✗ Infeasible at scaling {scaling_factor:.3f}, trying {scaling_factor * 0.9:.3f}..."
+        )
+        scaling_factor *= 0.9
+else:
+    print("ERROR: Could not find feasible solution for MCF")
+    flow_vars = None
 
+print()
 
-mcf_result_df, link_util_df = run_mcf(G, mcf)  # Run MCF and get results
+# ============================================================
+# STEP 6: Display MCF Results (non-zero flows only)
+# ============================================================
+
+if flow_vars:
+    print("=" * 60)
+    print("MCF SOLUTION - LINK UTILIZATION")
+    print("=" * 60)
+    link_results = []
+    # Aggregate link flows over all five commodities
+    for i, j in G.edges():
+        capacity = G[i][j]["capacity"]
+        weight = G[i][j]["weight"]
+        # Sum flows across all commodities, both directions
+        total_flow_ij = sum(pulp.value(flow_vars[(c["k"], i, j)]) for c in scaled_comms)
+        total_flow_ji = sum(pulp.value(flow_vars[(c["k"], j, i)]) for c in scaled_comms)
+        # Only output non-zero links (allowing for tolerance)
+        if total_flow_ij > 0.01 or total_flow_ji > 0.01:
+            net_flow = max(total_flow_ij, total_flow_ji)
+            utilization = (net_flow / capacity) * 100
+            link_results.append(
+                {
+                    "Link": f"{i}↔{j}",
+                    "Flow (Mbps)": net_flow,
+                    "Capacity (Mbps)": capacity,
+                    "Utilization (%)": utilization,
+                }
+            )
+
+    df_mcf = pd.DataFrame(link_results)
+    print(df_mcf.to_string(index=False))
+    print()
+    print(f"Average Utilization: {df_mcf['Utilization (%)'].mean():.2f}%")
+    print(f"Max Utilization: {df_mcf['Utilization (%)'].max():.2f}%")
+    print()
+    df_mcf.to_csv("MCF_result.csv", index=False)
+    df_mcf.to_csv("LinkUtilisation.csv", index=False)
+    print("✓ Saved: MCF_result.csv")
+    print("✓ Saved: LinkUtilisation.csv")
+    print()
+
+print("=" * 60)
+print("ANALYSIS COMPLETE")
+print("=" * 60)
