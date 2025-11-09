@@ -2,6 +2,7 @@ import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
 
+# --- NSFNET Topology ---
 G = nx.Graph()
 edges = [
     (1, 2, 3),
@@ -29,7 +30,7 @@ edges = [
 for u, v, w in edges:
     G.add_edge(u, v, Weight=w)
 
-# Use labels: City Name (Node Number)
+# Node labels: City (Number)
 node_labels = {
     1: "San Francisco (1)",
     2: "Palo Alto (2)",
@@ -47,39 +48,40 @@ node_labels = {
     14: "San Diego (14)",
 }
 
-# SCF from CSV
+# --- SCF from CSV ---
 scf = pd.read_csv("scf_230500226.csv")
 source = int(scf.loc[0, "source"])
 target = int(scf.loc[0, "destination"])
 
-# Shortest Path
+# --- Shortest Path ---
 path = nx.shortest_path(G, source=source, target=target, weight="Weight")
 cost = nx.shortest_path_length(G, source=source, target=target, weight="Weight")
-print("Shortest path sequence:", path)
+
+# --- Only output non-zero steps in the path ---
+# For shortest path, all steps are by definition traversed (non-zero),
+# but for consistency, show only edges where source != destination (i.e., movement happens)
+filtered_path_edges = []
+for i in range(len(path) - 1):
+    u, v = path[i], path[i + 1]
+    if u != v:
+        filtered_path_edges.append((u, v))
+
+print("Shortest path sequence (non-zero edges):", filtered_path_edges)
 print("Total path cost (sum of weights):", cost)
 
-# Visualization
+# --- Visualization ---
 pos = nx.spring_layout(G, seed=42)
 plt.figure(figsize=(12, 10))
-
-# Draw nodes with labels "City Name (Node Number)"
 nx.draw_networkx_nodes(G, pos, node_color="lightblue", node_size=700)
 nx.draw_networkx_labels(G, pos, labels=node_labels, font_size=10)
-
-# Draw all edges in gray
 nx.draw_networkx_edges(G, pos, edgelist=G.edges(), width=2, edge_color="gray")
-
-# Highlight shortest path edges in red
-path_edges = list(zip(path, path[1:]))
-nx.draw_networkx_edges(G, pos, edgelist=path_edges, width=4, edge_color="red")
-
+nx.draw_networkx_edges(G, pos, edgelist=filtered_path_edges, width=4, edge_color="red")
 nx.draw_networkx_edge_labels(
     G,
     pos,
     edge_labels={(u, v): d["Weight"] for u, v, d in G.edges(data=True)},
     font_color="green",
 )
-
 plt.title(
     f"NSFNET - Shortest Path {node_labels[source]} → {node_labels[target]}", fontsize=14
 )
